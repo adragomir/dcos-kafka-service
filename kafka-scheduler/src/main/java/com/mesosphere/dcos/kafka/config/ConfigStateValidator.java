@@ -146,29 +146,33 @@ public class ConfigStateValidator {
           throws ValidationException {
 
     List<ValidationError> errors = new ArrayList<>();
-    errors.addAll(validateBrokerDisk(oldConfig, newConfig));
+    errors.addAll(validateBrokerDisks(oldConfig, newConfig));
     errors.addAll(validateBrokerHeap(newConfig));
 
     return errors;
   }
 
-  private List<ValidationError> validateBrokerDisk(BrokerConfiguration oldConfig, BrokerConfiguration newConfig) {
+  private List<ValidationError> validateBrokerDisks(BrokerConfiguration oldConfig, BrokerConfiguration newConfig) {
     List<ValidationError> errors = new ArrayList<>();
 
-    double oldDisk = oldConfig.getDisk();
-    double newDisk = newConfig.getDisk();
+    for(int i = 0; i < oldConfig.getActualDisks().size(); i++) {
 
-    if (oldDisk != newDisk) {
-      errors.add(new ValidationError("disk",
-              "Changing this value (from " + oldDisk + " to " + newDisk + ") is not supported."));
-    }
+      double oldDisk = oldConfig.getActualDisks().get(i).getSize();
+      double newDisk = newConfig.getActualDisks().get(i).getSize();
 
-    final String oldDiskType = oldConfig.getDiskType();
-    final String newDiskType = newConfig.getDiskType();
+      if (oldDisk != newDisk) {
+        errors.add(new ValidationError("disk",
+            "Changing this value (from " + oldDisk + " to " + newDisk + ") is not supported."));
+      }
 
-    if (!StringUtils.equals(oldDiskType, newDiskType)) {
-      errors.add(new ValidationError("diskType",
-              "Changing this value (from " + oldDiskType + " to " + newDiskType + ") is not supported."));
+      final String oldDiskType = oldConfig.getActualDisks().get(i).getType();
+      final String newDiskType = newConfig.getActualDisks().get(i).getType();
+
+      if (!StringUtils.equals(oldDiskType, newDiskType)) {
+        errors.add(new ValidationError("diskType",
+            "Changing this value (from " + oldDiskType + " to " + newDiskType + ") is not supported."));
+      }
+
     }
 
     return errors;

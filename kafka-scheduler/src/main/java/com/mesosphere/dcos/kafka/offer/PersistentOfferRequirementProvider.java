@@ -92,7 +92,7 @@ public class PersistentOfferRequirementProvider implements KafkaOfferRequirement
     taskBuilder = updateConfigTarget(taskBuilder, configName);
     taskBuilder = updateCpu(taskBuilder, brokerConfig);
     taskBuilder = updateMem(taskBuilder, brokerConfig);
-    taskBuilder = updateDisk(taskBuilder, brokerConfig);
+    taskBuilder = updateDisks(taskBuilder, brokerConfig);
     taskBuilder = updateCmd(taskBuilder, configName);
     taskBuilder = updateKafkaHeapOpts(taskBuilder, brokerConfig);
 
@@ -214,10 +214,59 @@ public class PersistentOfferRequirementProvider implements KafkaOfferRequirement
     return updateValue(taskBuilder, "mem", valBuilder.build());
   }
 
-  private TaskInfo.Builder updateDisk(TaskInfo.Builder taskBuilder, BrokerConfiguration brokerConfig) {
-    ValueBuilder valBuilder = new ValueBuilder(Value.Type.SCALAR);
-    valBuilder.setScalar(brokerConfig.getDisk());
-    return updateValue(taskBuilder, "disk", valBuilder.build());
+  private TaskInfo.Builder updateDisks(TaskInfo.Builder taskBuilder, BrokerConfiguration brokerConfig) {
+    List<Resource> updatedResources = new ArrayList<Resource>();
+    List<Resource> diskResources = new ArrayList<Resource>();
+
+    for (Resource resource : taskBuilder.getResourcesList()) {
+      if (resource.getName().equals("disk")) {
+        diskResources.add(resource);
+      } else {
+        updatedResources.add(resource);
+      }
+    }
+    log.info(String.format(">>>>>>>>>>>XXX calling updateDisks, I have %d disks", diskResources.size()));
+    for (Resource resource : diskResources) {
+      log.info(resource.toString());
+    }
+    log.info("<<<<<<<<<<<XXX calling updateDisks, modifying");
+
+    if (diskResources.size() == 1) {
+      ValueBuilder valBuilder = new ValueBuilder(Value.Type.SCALAR);
+      valBuilder.setScalar(brokerConfig.getActualDisks().get(0).getSize());
+      updatedResources.add(ResourceUtils.setValue(diskResources.get(0), valBuilder.build()));
+    } else {
+        //we need source !!!
+        for (Resource resource : diskResources) {
+            // hack on disk
+            if (resource.hasDisk()) {
+                Resource.DiskInfo di = resource.getDisk();
+                if (di.hasSource()) {
+                    for (DiskConfiguration d: brokerConfig.getActualDisks()) {
+                        if (
+                            (d.getType().equals("MOUNT") && di.getSource().getType() == Resource.DiskInfo.Source.Type.MOUNT && di.getSource().getMount().getRoot().equals(d.getPath())) ||
+                            (d.getType().equals("PATH") && di.getSource().getType() == Resource.DiskInfo.Source.Type.PATH && di.getSource().getPath().getRoot().equals(d.getPath()))
+                            ) {
+                            ValueBuilder valBuilder = new ValueBuilder(Value.Type.SCALAR);
+                            valBuilder.setScalar(d.getSize());
+                            Resource modded = resource.toBuilder().setScalar(valBuilder.build().getScalar()).build();
+                            updatedResources.add(modded);
+                        }
+                    }
+
+                }
+            }
+        }
+    }
+    log.info(String.format("+++++++++++XXX calling updateDisks, I have %d disks", diskResources.size()));
+    for (Resource resource : diskResources) {
+      log.info(resource.toString());
+    }
+    log.info("------------XX calling updateDisks, modifying");
+
+    taskBuilder.clearResources();
+    taskBuilder.addAllResources(updatedResources);
+    return taskBuilder;
   }
 
   private TaskInfo.Builder updatePort(TaskInfo.Builder taskBuilder, BrokerConfiguration brokerConfig) {
@@ -298,7 +347,6 @@ public class PersistentOfferRequirementProvider implements KafkaOfferRequirement
     String overridePrefix = KafkaSchedulerConfiguration.KAFKA_OVERRIDE_PREFIX;
     String brokerName = OfferUtils.idToName(brokerId);
 
-    String containerPath = "kafka-volume-" + UUID.randomUUID();
 
     KafkaSchedulerConfiguration config = configState.fetch(UUID.fromString(configName));
     BrokerConfiguration brokerConfig = config.getBrokerConfiguration();
@@ -338,11 +386,21 @@ public class PersistentOfferRequirementProvider implements KafkaOfferRequirement
       .addEnvironmentVar(CONFIG_ID_KEY, configName)
       .addEnvironmentVar(overridePrefix + "ZOOKEEPER_CONNECT", config.getFullKafkaZookeeperPath())
       .addEnvironmentVar(overridePrefix + "BROKER_ID", Integer.toString(brokerId))
-      .addEnvironmentVar(overridePrefix + "LOG_DIRS", containerPath + "/" + brokerName)
       .addEnvironmentVar(overridePrefix + "LISTENERS", "PLAINTEXT://:" + port)
       .addEnvironmentVar(overridePrefix + "PORT", Long.toString(port))
       .addEnvironmentVar("KAFKA_DYNAMIC_BROKER_PORT", Boolean.toString(isDynamicPort))
-      .addEnvironmentVar("KAFKA_HEAP_OPTS", getKafkaHeapOpts(brokerConfig.getHeap()));
+      .addEnvironmentVar("KAFKA_HEAP_OPTS", getKafkaHeapOpts(brokerConfig.getHeap()))
+      .addEnvironmentVar("USER", config.getServiceConfiguration().getUser())
+      .addEnvironmentVar("PLACEMENT_STRATEGY", config.getServiceConfiguration().getPlacementStrategy())
+      .addEnvironmentVar("PHASE_STRATEGY", config.getServiceConfiguration().getPhaseStrategy())
+      .addEnvironmentVar("BROKER_COUNT", Integer.toString(config.getServiceConfiguration().getCount()))
+      .addEnvironmentVar("BROKER_CPUS", Double.toString(config.getBrokerConfiguration().getCpus()))
+      .addEnvironmentVar("BROKER_MEM", Double.toString(config.getBrokerConfiguration().getMem()))
+      .addEnvironmentVar("BROKER_HEAP_MB", Integer.toString(config.getBrokerConfiguration().getHeap().getSizeMb()))
+      .addEnvironmentVar("BROKER_DISKS", System.getenv("BROKER_DISKS"))
+      .addEnvironmentVar("JAVA_URI", brokerConfig.getJavaUri())
+      .addEnvironmentVar("KAFKA_URI", brokerConfig.getKafkaUri())
+      .addEnvironmentVar("OVERRIDER_URI", brokerConfig.getOverriderUri());
 
     // Launch command for custom executor
     final String executorCommand = "./executor/bin/kafka-executor -Dlogback.configurationFile=executor/conf/logback.xml";
@@ -350,6 +408,17 @@ public class PersistentOfferRequirementProvider implements KafkaOfferRequirement
     CommandInfoBuilder executorCommandBuilder = new CommandInfoBuilder()
       .setCommand(executorCommand)
       .addEnvironmentVar("JAVA_HOME", "jre1.8.0_91")
+      .addEnvironmentVar("USER", config.getServiceConfiguration().getUser())
+      .addEnvironmentVar("PLACEMENT_STRATEGY", config.getServiceConfiguration().getPlacementStrategy())
+      .addEnvironmentVar("PHASE_STRATEGY", config.getServiceConfiguration().getPhaseStrategy())
+      .addEnvironmentVar("BROKER_COUNT", Integer.toString(config.getServiceConfiguration().getCount()))
+      .addEnvironmentVar("BROKER_CPUS", Double.toString(config.getBrokerConfiguration().getCpus()))
+      .addEnvironmentVar("BROKER_MEM", Double.toString(config.getBrokerConfiguration().getMem()))
+      .addEnvironmentVar("BROKER_HEAP_MB", Integer.toString(config.getBrokerConfiguration().getHeap().getSizeMb()))
+      .addEnvironmentVar("BROKER_DISKS", System.getenv("BROKER_DISKS"))
+      .addEnvironmentVar("JAVA_URI", brokerConfig.getJavaUri())
+      .addEnvironmentVar("KAFKA_URI", brokerConfig.getKafkaUri())
+      .addEnvironmentVar("OVERRIDER_URI", brokerConfig.getOverriderUri())
       .addUri(brokerConfig.getJavaUri())
       .addUri(brokerConfig.getKafkaUri())
       .addUri(brokerConfig.getOverriderUri())
@@ -372,7 +441,6 @@ public class PersistentOfferRequirementProvider implements KafkaOfferRequirement
       .setName(brokerName)
       .setTaskId(TaskID.newBuilder().setValue("").build()) // Set later by TaskRequirement
       .setSlaveId(SlaveID.newBuilder().setValue("").build()) // Set later
-      .setData(brokerTaskBuilder.build().toByteString())
       .addResources(ResourceUtils.getDesiredScalar(role, principal, "cpus", brokerConfig.getCpus()))
       .addResources(ResourceUtils.getDesiredScalar(role, principal, "mem", brokerConfig.getMem()))
       .addResources(ResourceUtils.getDesiredRanges(
@@ -384,19 +452,34 @@ public class PersistentOfferRequirementProvider implements KafkaOfferRequirement
               .setBegin(port)
               .setEnd(port).build())));
 
-    if (brokerConfig.getDiskType().equals("MOUNT")) {
-      taskBuilder.addResources(ResourceUtils.getDesiredMountVolume(
+    List<String> builtLogDirs = new ArrayList<>();
+    for (DiskConfiguration d: brokerConfig.getActualDisks()) {
+      String containerPath = "kafka-volume-" + UUID.randomUUID();
+      builtLogDirs.add(containerPath + "/" + brokerName);
+      if (d.getType().equals("PATH")) {
+        taskBuilder.addResources(ResourceUtils.getDesiredPathVolume(
             role,
             principal,
-            brokerConfig.getDisk(),
+            d.getSize(),
+            d.getPath(),
             containerPath));
-    } else {
-      taskBuilder.addResources(ResourceUtils.getDesiredRootVolume(
+      } else if (d.getType().equals("MOUNT")) {
+        taskBuilder.addResources(ResourceUtils.getDesiredMountVolume(
             role,
             principal,
-            brokerConfig.getDisk(),
+            d.getSize(),
+            d.getPath(),
             containerPath));
+      } else {
+        taskBuilder.addResources(ResourceUtils.getDesiredRootVolume(
+            role,
+            principal,
+            d.getSize(),
+            containerPath));
+      }
     }
+    brokerTaskBuilder.addEnvironmentVar(overridePrefix + "LOG_DIRS", String.join(",", builtLogDirs));
+    taskBuilder.setData(brokerTaskBuilder.build().toByteString());
 
     taskBuilder
       .setLabels(Labels.newBuilder()

@@ -24,8 +24,7 @@ schedulerConfiguration:
     mem: ${BROKER_MEM:-2304}
     heap:
       sizeMb: ${BROKER_HEAP_MB:-2048}
-    disk: ${BROKER_DISK}
-    diskType: ${DISK_TYPE:-ROOT}
+    disks: ${BROKER_DISKS}
     javaUri: ${JAVA_URI}
     kafkaUri: ${KAFKA_URI}
     overriderUri: ${OVERRIDER_URI}
